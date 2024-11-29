@@ -249,11 +249,16 @@ class TransformerBlock(nn.Module):
 
 
 class Transformer(nn.Module):
-    def __init__(self, params: ModelArgs):
+    def __init__(self, params: ModelArgs, activation : bool = False, activation_layer : int = 12, steering_vector = torch.tensor(4096*[0])):
         super().__init__()
         self.params = params
         self.vocab_size = params.vocab_size
         self.n_layers = params.n_layers
+
+        self.activation_bool = activation
+        self.activation_layer_n = activation_layer
+
+        self.adding_activation_vector = steering_vector.cuda()
 
         self.tok_embeddings = VocabParallelEmbedding(
             params.vocab_size, params.dim, init_method=lambda x: x
@@ -295,8 +300,17 @@ class Transformer(nn.Module):
                 [torch.zeros((seqlen, start_pos), device=tokens.device), mask]
             ).type_as(h)
 
-        for layer in self.layers:
+        for k, layer in enumerate(self.layers):
             h = layer(h, start_pos, freqs_cis, mask)
+            if self.activation_layer_n == k:
+                activation_tensor = h.detach().clone()
+                activation_tensor = activation_tensor.flatten(0,1)
+                activation_vector = activation_tensor.mean(dim=0)
+                if not torch.equal(self.adding_activation_vector, torch.tensor([0]*4096).cuda()):
+                    steering_vector = self.adding_activation_vector.repeat(h.shape[1],1)
+                    steering_vector = steering_vector.unsqueeze(0)
+                    h += steering_vector
         h = self.norm(h)
         output = self.output(h).float()
-        return output
+
+        return output, activation_vector if self.activation_bool else None

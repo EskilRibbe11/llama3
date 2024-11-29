@@ -1,6 +1,5 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # This software may be used and distributed in accordance with the terms of the Llama 3 Community License Agreement.
-
 import json
 import os
 import sys
@@ -15,6 +14,9 @@ from fairscale.nn.model_parallel.initialize import (
     initialize_model_parallel,
     model_parallel_is_initialized,
 )
+
+os.environ["MASTER_ADDR"] = "localhost"
+os.environ["MASTER_PORT"] = "12355"
 
 from llama.model import ModelArgs, Transformer
 from llama.tokenizer import ChatFormat, Dialog, Message, Tokenizer
@@ -41,6 +43,9 @@ class Llama:
         max_batch_size: int,
         model_parallel_size: Optional[int] = None,
         seed: int = 1,
+        activation : bool = False,
+        activation_layer : int = 12,
+        steering_vector = torch.tensor([0.0]*4096)
     ) -> "Llama":
         """
         Build a Llama instance by initializing and loading a model checkpoint.
@@ -67,9 +72,8 @@ class Llama:
         assert 1 <= max_seq_len <= 8192, f"max_seq_len must be between 1 and 8192, got {max_seq_len}."
         assert os.path.isdir(ckpt_dir), f"Checkpoint directory '{ckpt_dir}' does not exist."
         assert os.path.isfile(tokenizer_path), f"Tokenizer file '{tokenizer_path}' does not exist."
-        
         if not torch.distributed.is_initialized():
-            torch.distributed.init_process_group("nccl")
+            torch.distributed.init_process_group(backend="gloo", init_method="env://?use_libuv=False", rank=0, world_size=1)
         if not model_parallel_is_initialized():
             if model_parallel_size is None:
                 model_parallel_size = int(os.environ.get("WORLD_SIZE", 1))
@@ -106,14 +110,15 @@ class Llama:
             torch.set_default_tensor_type(torch.cuda.BFloat16Tensor)
         else:
             torch.set_default_tensor_type(torch.cuda.HalfTensor)
-        model = Transformer(model_args)
+        model = Transformer(model_args, activation=activation, activation_layer=activation_layer, steering_vector=steering_vector)
         model.load_state_dict(checkpoint, strict=False)
         print(f"Loaded in {time.time() - start_time:.2f} seconds")
-
         return Llama(model, tokenizer)
 
     def __init__(self, model: Transformer, tokenizer: Tokenizer):
         self.model = model
+        self.activation = model.activation_bool
+        self.activation_layer = model.activation_layer_n
         self.tokenizer = tokenizer
         self.formatter = ChatFormat(tokenizer)
 
@@ -149,7 +154,7 @@ class Llama:
         params = self.model.params
         bsz = len(prompt_tokens)
         assert bsz <= params.max_batch_size, (bsz, params.max_batch_size)
-
+        activations = []
         min_prompt_len = min(len(t) for t in prompt_tokens)
         max_prompt_len = max(len(t) for t in prompt_tokens)
         assert max_prompt_len <= params.max_seq_len
@@ -161,12 +166,11 @@ class Llama:
             tokens[k, : len(t)] = torch.tensor(t, dtype=torch.long, device="cuda")
         if logprobs:
             token_logprobs = torch.zeros_like(tokens, dtype=torch.float)
-
         prev_pos = 0
         eos_reached = torch.tensor([False] * bsz, device="cuda")
         input_text_mask = tokens != pad_id
         if min_prompt_len == total_len:
-            logits = self.model.forward(tokens, prev_pos)
+            logits, activations = self.model.forward(tokens, prev_pos)
             token_logprobs = -F.cross_entropy(
                 input=logits.transpose(1, 2),
                 target=tokens,
@@ -177,7 +181,7 @@ class Llama:
         stop_tokens = torch.tensor(list(self.tokenizer.stop_tokens))
 
         for cur_pos in range(min_prompt_len, total_len):
-            logits = self.model.forward(tokens[:, prev_pos:cur_pos], prev_pos)
+            logits, activation_vector = self.model.forward(tokens[:, prev_pos:cur_pos], prev_pos)
             if temperature > 0:
                 probs = torch.softmax(logits[:, -1] / temperature, dim=-1)
                 next_token = sample_top_p(probs, top_p)
@@ -201,6 +205,8 @@ class Llama:
                 torch.isin(next_token, stop_tokens)
             )
             prev_pos = cur_pos
+            if self.activation:
+                activations.append(activation_vector)
             if all(eos_reached):
                 break
 
@@ -214,7 +220,7 @@ class Llama:
             probs = None
             if logprobs:
                 probs = token_logprobs[i][start : len(prompt_tokens[i]) + max_gen_len]
-            # cut to after eos tok if any
+            #cut to after eos tok if any
             for stop_token in self.tokenizer.stop_tokens:
                 try:
                     eos_idx = toks.index(stop_token)
@@ -224,7 +230,16 @@ class Llama:
                     pass
             out_tokens.append(toks)
             out_logprobs.append(probs)
-        return (out_tokens, out_logprobs if logprobs else None)
+        return (out_tokens, out_logprobs if logprobs else None, activations if activations else None)
+
+    def change_activation_layer(self, n):
+        self.model.activation_layer_n = n
+
+    def change_activation_vector(self,vec):
+        self.model.adding_activation_vector = vec
+
+    def change_activation_bool(self,bool):
+        self.model.activation_bool = bool
 
     def text_completion(
         self,
@@ -310,7 +325,7 @@ class Llama:
         prompt_tokens = [
             self.formatter.encode_dialog_prompt(dialog) for dialog in dialogs
         ]
-        generation_tokens, generation_logprobs = self.generate(
+        generation_tokens, generation_logprobs, activations = self.generate(
             prompt_tokens=prompt_tokens,
             max_gen_len=max_gen_len,
             temperature=temperature,
@@ -328,7 +343,7 @@ class Llama:
                     "logprobs": logprobs_i,
                 }
                 for t, logprobs_i in zip(generation_tokens, generation_logprobs)
-            ]
+            ], activations
         return [
             {
                 "generation": {
@@ -337,7 +352,7 @@ class Llama:
                 },
             }
             for t in generation_tokens
-        ]
+        ], activations
 
 
 def sample_top_p(probs, p):

@@ -6,6 +6,12 @@ from typing import List, Optional
 import fire
 
 from llama import Dialog, Llama
+import os
+import torch
+
+os.environ["MASTER_ADDR"] = "localhost"
+os.environ["MASTER_PORT"] = "12355"
+torch.distributed.init_process_group(backend="gloo", init_method="env://?use_libuv=False", rank=0, world_size=1)
 
 
 def main(
