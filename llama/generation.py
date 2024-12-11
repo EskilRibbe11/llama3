@@ -176,9 +176,7 @@ class Llama:
                 reduction="none",
                 ignore_index=pad_id,
             )
-
         stop_tokens = torch.tensor(list(self.tokenizer.stop_tokens))
-
         for cur_pos in range(min_prompt_len, total_len):
             logits, activation_vector = self.model.forward(tokens[:, prev_pos:cur_pos], prev_pos)
             if temperature > 0:

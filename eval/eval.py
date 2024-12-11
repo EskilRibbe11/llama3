@@ -5,12 +5,13 @@ temperature = 0.6
 top_p = 0.9
 max_seq_len = 1024
 max_batch_size = 4
-max_gen_len = 1023
+max_gen_len = 1
 
 
 def extracting_steering_vector(generator, data, layer=28, iter=2000):
     input_list_train = data[0]
     output_list_train = data[1]
+    #instruct_vec = torch.load(f"./steering_vectors/instruct_vector{layer}.pt")
     generator.change_activation_layer(layer)
     generator.change_activation_bool(True)
     generator.change_activation_vector(torch.tensor(4096*[0]))
@@ -25,17 +26,16 @@ def extracting_steering_vector(generator, data, layer=28, iter=2000):
                                            temperature=temperature)
         value_numerical = "1" if value[0]["generation"]["content"] == "T" else 0
         if value_numerical == output_list_train[i]:
-            pos_activation_vector_dic[i] = activation_vec_list[0] 
-            loss += 1/iter
+            pos_activation_vector_dic[i] = activation_vec_list[0]# - instruct_vec 
         else :
-            neg_activation_vector_dic[i] = activation_vec_list[0]
+            neg_activation_vector_dic[i] = activation_vec_list[0]# - instruct_vec
             loss += 1/len(input_list_train)
-    pos_vec_sum = torch.zeros([len(neg_activation_vector_dic[1])])
+    pos_vec_sum = torch.tensor(4096*[0.0])
     for ind, item in pos_activation_vector_dic.items():
         pos_vec_sum += 1/len(pos_activation_vector_dic)*item
 
 
-    neg_vec_sum = torch.zeros([len(neg_activation_vector_dic[1])])
+    neg_vec_sum = torch.tensor(4096*[0.0])
     for ind, item in neg_activation_vector_dic.items():
         neg_vec_sum += 1/len(neg_activation_vector_dic)*item
 
@@ -56,8 +56,13 @@ def calc_loss_steering_vector(generator, steering_vec, data, layer=28, iter=1000
                                           max_gen_len=max_gen_len,
                                            top_p=top_p,
                                            temperature=temperature)
-        assert value[0]["generation"]["content"]=="T" or value[0]["generation"]["content"]=="F", "steering vec too large"
-        value2 = 1 if value[0]["generation"]["content"]=="T" else 0
-        loss += 1/iter*abs(int(output_list_test[sample])-int(value2))
+        if value[0]["generation"]["content"]=="T":
+            value2 = 1
+            loss += 1/iter*abs(int(output_list_test[sample])-int(value2))
+        elif value[0]["generation"]["content"]=="F":
+            value2 = 0
+            loss += 1/iter*abs(int(output_list_test[sample])-int(value2))
+        else:
+            loss += 1/iter
     return loss
 
