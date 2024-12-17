@@ -305,7 +305,8 @@ class Transformer(nn.Module):
             if self.activation_layer_n == k:
                 activation_tensor = h.detach().clone()
                 activation_tensor = activation_tensor.flatten(0,1)
-                activation_vector = activation_tensor.mean(dim=0)
+                activation_vector = activation_tensor[-1,:]
+                #activation_vector = activation_tensor.mean(dim=0)
                 if not torch.equal(self.adding_activation_vector, torch.tensor([0]*4096).cuda()):
                     steering_vector = self.adding_activation_vector.repeat(h.shape[1],1)
                     steering_vector = steering_vector.unsqueeze(0)
