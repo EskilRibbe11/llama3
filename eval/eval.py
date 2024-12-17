@@ -5,7 +5,7 @@ temperature = 0.6
 top_p = 0.9
 max_seq_len = 1024
 max_batch_size = 4
-max_gen_len = 1
+max_gen_len = 1023
 
 
 def extracting_steering_vector(generator, data, layer=28, iter=2000):
