@@ -50,22 +50,31 @@ def calc_loss_steering_vector(generator, steering_vec, data, layer=28, iter=1000
     generator.change_activation_vector(steering_vec)
     generator.change_activation_layer(layer)
     generator.change_activation_bool(False)
-    loss = 0
     wrong_class = 0 
+    true_pos = 0
+    true_neg = 0
+    false_pos = 0
+    false_neg = 0
     for sample in range(iter):
         value, activations = generator.chat_completion([input_list_test[sample]],
                                           max_gen_len=max_gen_len,
                                            top_p=top_p,
                                            temperature=temperature)
         if value[0]["generation"]["content"]=="T":
-            value2 = 1
-            loss += 1/iter*abs(int(output_list_test[sample])-int(value2))
+            if int(output_list_test[sample]) == 1:
+                true_pos +=1
+            elif int(output_list_test[sample]) == 0:
+                false_pos += 1
         elif value[0]["generation"]["content"]=="F":
-            value2 = 0
-            loss += 1/iter*abs(int(output_list_test[sample])-int(value2))
+            if int(output_list_test[sample]) == 1:
+                false_neg +=1
+            elif int(output_list_test[sample]) == 0:
+                true_neg += 1
         else:
-            loss += 1/iter
             wrong_class += 1
+    precision = true_pos/(true_pos + false_pos)
+    recall = true_pos/(true_pos + false_neg)
+    f1_score = 2*precision*recall/(precision+recall)
     print(f"{wrong_class} questions were wrongly classified")
-    return loss
+    return f1_score, wrong_class
 
